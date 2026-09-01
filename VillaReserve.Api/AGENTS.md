@@ -5,109 +5,250 @@
 `VillaReserve.Api` is the ASP.NET Core backend for the VillaReserve reservation management system.
 
 The backend serves as the authoritative source of truth for:
-- Villa reservations and their lifecycle.
-- Availability calculations and conflicts.
-- Manually blocked periods.
-- External calendar synchronization (e.g., Google Calendar).
-- Administrative authentication and authorization.
-- Notification dispatching.
+- Villa reservations and their lifecycle (`PENDING`, `CONFIRMED`, `REJECTED`, `CANCELLED`, `EXPIRED`).
+- Authoritative availability calculations and conflict prevention.
+- Manually blocked periods (maintenance, personal use, external bookings).
+- External calendar synchronization (Google Calendar).
+- Administrative authentication and granular authorization.
+- Customer and administrator notifications.
 
 ---
 
-## 2. Core Architectural Principles
+## 2. Technology Stack & Baseline Standards
 
-- **Separation of Concerns**: Maintain a clean separation between Domain, Application (Use Cases / Services), Infrastructure (Data access, external APIs), and API (Controllers / Endpoints).
-- **Domain-Driven Design**: Centralize core business and availability rules within the domain/application layer, not in controllers or database queries alone.
-- **Authoritative Source of Truth**: The API never assumes frontend validations are sufficient. Every request is validated and verified authoritatively.
-- **DTOs & Contracts**: Always use Data Transfer Objects (DTOs) for request and response payloads. Never expose domain or database entities directly in API contracts.
-- **Simplicity & Testability**: Prefer simple, cohesive services with dependency injection. Avoid unnecessary complexity or premature abstractions.
+The backend must adhere strictly to the following technical foundation:
 
----
+- **Target Framework**: .NET 9 (`net9.0`)
+- **Language Version**: C# 13
+- **Web Framework**: ASP.NET Core Web API
+- **ORM**: Entity Framework Core 9 (`Npgsql.EntityFrameworkCore.PostgreSQL`)
+- **Database**: PostgreSQL with `pgcrypto` and `btree_gist` extensions
+- **Validation**: FluentValidation
+- **Documentation**: OpenAPI / Swagger / Scalar (exposed via `/docs`)
+- **Health Checks**: ASP.NET Core Health Checks (exposed via `/health`, verifying app and database connectivity)
+- **Testing**: xUnit, FluentAssertions, Moq/NSubstitute, Testcontainers for PostgreSQL
 
-## 3. Reservation Model & Lifecycle
-
-### Time Modeling
-- Model reservations strictly with `StartDateTime` and `EndDateTime` (using timezone-aware types such as `DateTimeOffset` or explicit UTC `DateTime` with timezone handling).
-- Do not model reservations solely by number of days. Support both full-day reservations and specific check-in / check-out times.
-
-### Lifecycle States
-Reservations must transition strictly among valid states:
-- `PENDING`: Initial state upon public customer request.
-- `CONFIRMED`: Approved by administrator; triggers calendar sync and customer confirmation.
-- `REJECTED`: Declined by administrator.
-- `CANCELLED`: Cancelled prior to or during stay.
-- `EXPIRED`: Reservation request timed out before confirmation.
-
-*Do not add new reservation states without explicit business requirements.*
-
-### Auditability
-- Do not physically delete reservations or administrative records.
-- Preserve full history through state transitions (`CANCELLED`, `REJECTED`, `EXPIRED`) and audit timestamps.
+### Strict Compiler & Code Quality Configuration
+Every `.csproj` must enforce:
+```xml
+<Nullable>enable</Nullable>
+<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+<ImplicitUsings>enable</ImplicitUsings>
+```
+- **Zero Warnings**: The solution must build with 0 compilation errors and 0 warnings.
+- **Async & Cancellation**: Every asynchronous method must accept and propagate a `CancellationToken`.
 
 ---
 
-## 4. Availability & Conflict Rules
+## 3. Architecture & Project Organization
 
-A time interval is unavailable if it overlaps with:
-1. An existing `CONFIRMED` reservation.
-2. A `PENDING` reservation (subject to the configured pending expiration/hold policy).
-3. An active `BlockedPeriod` (maintenance, personal use, external bookings).
-4. Synchronized external Google Calendar busy intervals.
+The backend follows a **Modular, Feature-Oriented Clean Architecture** that enforces the **Dependency Inversion Principle (DIP)**.
 
-All overlap and availability computations must be implemented in the backend domain/service layer.
+```text
+VillaReserve.Api/
+├── src/
+│   ├── API/                       # Host, Controllers, Middlewares, Program.cs, Filters
+│   │   ├── Controllers/
+│   │   ├── Middleware/
+│   │   └── Extensions/
+│   │
+│   ├── Features/                  # Feature-oriented vertical slices (Domain & Application logic)
+│   │   ├── Reservations/
+│   │   ├── Availability/
+│   │   ├── BlockedPeriods/
+│   │   ├── Authentication/
+│   │   ├── Notifications/
+│   │   └── Calendar/
+│   │
+│   ├── Infrastructure/            # Persistence, External APIs, EF Core DbContext, Configurations
+│   │   ├── Persistence/
+│   │   │   ├── AppDbContext.cs
+│   │   │   ├── Configurations/
+│   │   │   └── Migrations/
+│   │   └── External/
+│   │
+│   └── Shared/                    # Cross-cutting primitives (Errors, Authorization, Common Extensions)
+│       ├── Authorization/
+│       ├── Errors/
+│       └── Validation/
+│
+├── tests/
+│   ├── Unit/                      # Fast in-memory unit tests
+│   └── Integration/               # Real PostgreSQL integration tests (Testcontainers)
+│
+├── Dockerfile
+├── docker-compose.yml
+└── VillaReserve.Api.sln
+```
 
----
-
-## 5. Security & Authentication
-
-- **Admin Endpoints**: Require robust authentication (e.g., JWT / ASP.NET Core Identity) and role-based authorization.
-- **Public Endpoints**: Open for checking availability and submitting reservation requests. Must implement:
-  - Strict input validation and sanitization.
-  - Rate limiting and anti-abuse safeguards.
-- **Secrets Management**: Never commit secrets, connection strings, or API keys. Use environment variables and ASP.NET Core configuration (`IConfiguration`).
-- **Passwords & Tokens**: Never store plaintext passwords or use predictable tokens for private URLs.
-
----
-
-## 6. External Integrations
-
-### Google Calendar
-- Abstract the Google Calendar API behind an interface (e.g., `ICalendarService`).
-- Treat Google Calendar as a secondary integration for synchronization and external conflict reading; never as the primary database.
-- Synchronize only `CONFIRMED` reservations.
-- Keep domain logic decoupled from Google Calendar SDK specifics.
-
-### Notifications & Communication
-- Decouple notification dispatch (email, in-app notifications) from the core database transaction (e.g., domain events or background workers).
-- WhatsApp links/messages should be generated on demand; do not tightly couple the API to direct WhatsApp APIs unless explicitly required.
-
----
-
-## 7. Date & Timezone Handling
-
-- Store all timestamps with consistent timezone semantics (preferably UTC / `DateTimeOffset`).
-- Interpret incoming date-times consistently according to the configured property timezone.
-- Avoid any ambient local server timezone dependencies.
-
----
-
-## 8. Error Handling & Logging
-
-- **Error Responses**: Return standardized, structured error responses (e.g., RFC 7807 `ProblemDetails`).
-- **Security**: Never expose stack traces, SQL queries, or internal exceptions in production responses.
-- **Logging**: Use structured logging (`ILogger<T>`) for all key lifecycle events:
-  - Reservation request creation, confirmation, rejection, cancellation, and expiration.
-  - Authentication and authorization events.
-  - Calendar synchronization and notification dispatch outcomes/failures.
-- Never log passwords, tokens, API keys, or sensitive personal data.
+### Feature-Oriented Organization Rules
+- Keep feature-specific classes (DTOs, Commands/Queries, Handlers, Validators, Domain Logic, and specific Repository Interfaces) inside their respective `Features/<FeatureName>/` folder.
+- **Do not create global catch-all folders** like `Services/`, `Repositories/`, `DTOs/`, or `Validators/` when those classes belong to a specific feature.
+- `Shared/` is strictly reserved for truly cross-cutting infrastructure (e.g., base `Result` types, global error definitions, common extension methods).
 
 ---
 
-## 9. Testing Guidelines
+## 4. Layering Rules & Dependency Inversion Principle (DIP)
 
-Backend test coverage must prioritize:
-- Reservation lifecycle transitions and validation rules.
-- Overlapping date/time availability logic (boundary cases, exact overlaps, partial overlaps).
-- Blocked period conflict detection.
-- Authentication & authorization checks on protected endpoints.
-- Integration/unit tests with mocked external dependencies (`ICalendarService`, notification providers).
+Dependencies must always flow inward toward the domain logic:
+
+```text
+HTTP Request
+     ↓
+Controller / Endpoint (API Layer)
+     ↓
+Feature Handler / Application Service (Application Layer)
+     ↓
+Domain Model & Business Rules (Domain Layer)
+     ↓
+Infrastructure & Repositories (Infrastructure Layer via Abstractions)
+     ↓
+PostgreSQL / Google Calendar / External Services
+```
+
+### Key Architectural Constraints
+1. **Thin Controllers**:
+   - Controllers must only accept DTOs, delegate execution to feature handlers/services, and return standardized HTTP responses.
+   - Controllers must **never** contain business rules, database queries (`DbContext`), complex validation logic, or direct calls to external SDKs.
+2. **Dependency Inversion via Interfaces**:
+   - Feature services and handlers must depend on abstractions/interfaces (e.g., `IReservationRepository`, `IAvailabilityService`, `ICalendarService`, `IEmailService`, `IUnitOfWork`), **never on concrete infrastructure classes**.
+   - Interfaces are defined in the Application/Feature layer; implementations live in `Infrastructure/`.
+   - Avoid creating vacuous 1:1 interfaces with no architectural or testing benefit, but always abstract I/O, external integrations, and persistence boundaries.
+3. **DTOs & Encapsulation**:
+   - EF Core entities must **never** be accepted as controller parameters or returned directly in API responses. Always use explicit Request/Response DTOs.
+   - Do not leak raw `IQueryable<T>` out of repository boundaries if it bypasses business invariants or leaks EF Core tracking details.
+4. **Service Registration**:
+   - Encapsulate service and infrastructure registrations in dedicated extension methods (e.g., `builder.Services.AddInfrastructure(builder.Configuration)`).
+
+---
+
+## 5. Security & ASP.NET Core Authorization System
+
+Security is a primary design requirement. The system uses ASP.NET Core's native authorization capabilities with role-based and policy-based controls.
+
+### 1. Role-Based Authorization
+- Used for coarse-grained administrative access:
+  ```csharp
+  [Authorize(Roles = AppRoles.Admin)]
+  ```
+- All role names must be declared in strongly-typed constants (e.g., `AppRoles.Admin`), never raw magic strings.
+
+### 2. Policy-Based Authorization
+- Complex business permissions must be expressed as named policies registered during startup:
+  ```csharp
+  builder.Services.AddAuthorization(options =>
+  {
+      options.AddPolicy(AppPolicies.CanManageReservations, policy =>
+          policy.RequireRole(AppRoles.Admin, AppRoles.Manager));
+      
+      options.AddPolicy(AppPolicies.CanConfirmReservations, policy =>
+          policy.Requirements.Add(new MustHaveActiveAdminStatusRequirement()));
+  });
+  ```
+
+### 3. Custom Requirements & Authorization Handlers
+- Use `IAuthorizationRequirement` and `AuthorizationHandler<TRequirement>` (or resource-based `AuthorizationHandler<TRequirement, TResource>`) when authorization depends on dynamic conditions, contextual state, or resource ownership:
+  ```csharp
+  public class MustBePendingReservationRequirement : IAuthorizationRequirement { }
+
+  public class MustBePendingReservationHandler : AuthorizationHandler<MustBePendingReservationRequirement, Reservation>
+  {
+      protected override Task HandleRequirementAsync(
+          AuthorizationHandlerContext context,
+          MustBePendingReservationRequirement requirement,
+          Reservation resource)
+      {
+          if (resource.Status == ReservationStatus.Pending)
+          {
+              context.Succeed(requirement);
+          }
+          return Task.CompletedTask;
+      }
+  }
+  ```
+
+### 4. Public Endpoints & Anti-Abuse
+- Public endpoints (availability checks, reservation requests) must:
+  - Validate and sanitize all inputs via FluentValidation before executing domain logic.
+  - Implement rate-limiting to prevent scraping and denial-of-service.
+  - Never expose internal database identifiers, server stack traces, or administrative metadata.
+
+---
+
+## 6. Persistence & Entity Framework Core Guidelines
+
+- **Database Engine**: PostgreSQL with `Npgsql.EntityFrameworkCore.PostgreSQL`.
+- **Database Context**: Single `AppDbContext` in `Infrastructure/Persistence/AppDbContext.cs`.
+- **Entity Configurations**: Use dedicated `IEntityTypeConfiguration<T>` classes in `Infrastructure/Persistence/Configurations/`.
+- **Identifier Strategy**: Use `Guid` (PostgreSQL UUID) for all primary keys and external resource references.
+- **PostgreSQL Extensions**:
+  - `pgcrypto`: For database-level cryptographic UUID generation.
+  - `btree_gist`: For exclusion constraints preventing overlapping reservation intervals.
+  - Extensions must be activated in EF Core migrations via `modelBuilder.HasPostgresExtension("pgcrypto")` and `modelBuilder.HasPostgresExtension("btree_gist")`.
+- **Migrations**: Database schema must be managed exclusively through EF Core migrations (`dotnet ef migrations add`, `dotnet ef database update`). Never rely on manual production SQL scripts.
+- **Concurrency Control**: Enforce optimistic concurrency on reservations and blocked periods (e.g., using `RowVersion` or concurrency tokens) to prevent double-booking race conditions.
+
+---
+
+## 7. Date & Timezone Standards
+
+- **PostgreSQL Column Type**: Persist business timestamps strictly as `TIMESTAMPTZ` (`timestamp with time zone`).
+- **C# Types**: Use `DateTimeOffset` or UTC `DateTime` for all business dates and times (`StartDateTime`, `EndDateTime`).
+- **Explicit Timezone Conversion**: Never rely on the host server's local timezone. Store and compute in UTC, and convert to the configured property timezone when evaluating local business rules (e.g., check-in/check-out hours).
+- **Interval Overlap Formula**: Overlap between two half-open intervals $[Start_A, End_A)$ and $[Start_B, End_B)$ must strictly follow:
+  $$\text{Overlap} \iff (Start_A < End_B) \land (End_A > Start_B)$$
+
+---
+
+## 8. Error Handling & Validation Standards
+
+- **Global Exception Handling**:
+  - Centralized exception handling middleware / `IExceptionHandler` mapping exceptions to RFC 7807 `ProblemDetails`.
+  - Unhandled errors must return `500 Internal Server Error` with a generic message and correlation ID.
+  - **Never leak** connection strings, stack traces, database schema details, or third-party API keys in HTTP responses.
+- **Request Validation**:
+  - All incoming commands and requests must be validated using FluentValidation before reaching domain logic.
+  - Validation failures must return `400 Bad Request` with `ValidationProblemDetails`.
+- **Result Pattern / Domain Errors**:
+  - Prefer explicit domain error objects or structured Result types for anticipated business rule failures (e.g., `SlotUnavailableError`, `InvalidStateTransitionError`).
+
+---
+
+## 9. Configuration & Secrets Management
+
+- **Options Pattern**: Use strongly-typed configuration classes (`IOptions<T>`) registered with `ValidateDataAnnotations()` and `ValidateOnStart()` to fail fast on application startup if required settings are missing.
+- **Secrets**:
+  - Never commit credentials, passwords, API keys, or connection strings into source control.
+  - Maintain a `.env.example` with dummy values for development setup.
+  - Local development uses environment variables or Docker Compose environment files.
+
+---
+
+## 10. External Integrations (Calendar & Notifications)
+
+- **Decoupled Integrations**:
+  - Google Calendar and Notification dispatching (Email, WhatsApp link generators) must be abstracted behind interfaces (`ICalendarService`, `IEmailNotificationService`).
+  - Core database transactions must not fail or hang if an external notification service is slow or temporarily unavailable. Dispatch notifications via background jobs, outbox pattern, or domain events.
+- **Google Calendar Role**:
+  - Google Calendar is an external integration and conflict source, **never the primary database**.
+  - Synchronize only `CONFIRMED` reservations to Google Calendar.
+
+---
+
+## 11. Automated Testing Standards
+
+All tests must be automated and executable via `dotnet test`.
+
+```text
+tests/
+├── Unit/               # Tests for domain logic, validation rules, handlers, overlap math
+└── Integration/        # API and database tests running against real PostgreSQL
+```
+
+- **Unit Tests**:
+  - Test domain state transitions, interval conflict algorithms, and validators in isolation.
+  - Fast execution with zero external I/O dependencies.
+- **Integration Tests**:
+  - **Must run against real PostgreSQL** (using Testcontainers or a test PostgreSQL instance).
+  - **Strict Prohibition**: SQLite must **not** be used as a test substitute for PostgreSQL, because critical database features (`TIMESTAMPTZ`, UUIDs, `btree_gist`, exclusion constraints) are PostgreSQL-specific.
+  - Verify database migrations, repository implementations, health check endpoints (`/health`), and full API endpoint pipelines.
