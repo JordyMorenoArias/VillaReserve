@@ -1,10 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using VillaReserve.Api.Domain.Entities;
 
 namespace VillaReserve.Api.Infrastructure.Persistence;
 
 /// <summary>
 /// The application's single EF Core database context.
-/// Entity configurations will be added here as features are implemented.
 /// </summary>
 public sealed class AppDbContext : DbContext
 {
@@ -13,6 +13,14 @@ public sealed class AppDbContext : DbContext
     {
     }
 
+    public DbSet<User> Users => Set<User>();
+    public DbSet<Reservation> Reservations => Set<Reservation>();
+    public DbSet<BlockedPeriod> BlockedPeriods => Set<BlockedPeriod>();
+    public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<CalendarEvent> CalendarEvents => Set<CalendarEvent>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<ReservationToken> ReservationTokens => Set<ReservationToken>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -20,12 +28,11 @@ public sealed class AppDbContext : DbContext
         // Enable pgcrypto for PostgreSQL-generated UUIDs.
         modelBuilder.HasPostgresExtension("pgcrypto");
 
-        // Enable btree_gist, required later for exclusion constraints
+        // Enable btree_gist, required for exclusion constraints
         // that prevent overlapping reservation intervals.
         modelBuilder.HasPostgresExtension("btree_gist");
 
-        // Entity configurations are applied using IEntityTypeConfiguration<T>
-        // as features are added. Example:
-        // modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+        // Apply all entity configurations from this assembly.
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
     }
 }
