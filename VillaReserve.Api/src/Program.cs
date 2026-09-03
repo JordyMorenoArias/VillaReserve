@@ -15,7 +15,7 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
-    app.MapScalarApiReference("/docs/{documentName}", options =>
+    app.MapScalarApiReference("/docs", options =>
     {
         options.WithTitle("VillaReserve API");
     });
